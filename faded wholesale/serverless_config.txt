@@ -1,0 +1,221 @@
+service: faded-skies-api
+
+frameworkVersion: '3'
+
+provider:
+  name: aws
+  runtime: nodejs18.x
+  stage: ${opt:stage, 'dev'}
+  region: ${opt:region, 'us-east-1'}
+  
+  # Environment variables
+  environment:
+    NODE_ENV: production
+    STAGE: ${self:provider.stage}
+    JWT_SECRET: ${env:JWT_SECRET}
+    DATABASE_URL: ${env:DATABASE_URL}
+    EMAIL_USER: ${env:EMAIL_USER}
+    EMAIL_PASS: ${env:EMAIL_PASS}
+    CORS_ORIGINS: ${env:CORS_ORIGINS}
+  
+  # IAM permissions
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - ses:SendEmail
+            - ses:SendRawEmail
+          Resource: "*"
+        - Effect: Allow
+          Action:
+            - rds:*
+          Resource: "*"
+        - Effect: Allow
+          Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+          Resource: "*"
+  
+  # VPC configuration (for RDS access)
+  vpc:
+    securityGroupIds:
+      - ${env:SECURITY_GROUP_ID}
+    subnetIds:
+      - ${env:SUBNET_ID_1}
+      - ${env:SUBNET_ID_2}
+  
+  # API Gateway configuration
+  apiGateway:
+    restApiId: ${env:API_GATEWAY_ID, ''}
+    restApiRootResourceId: ${env:API_GATEWAY_ROOT_RESOURCE_ID, ''}
+    description: Faded Skies Wholesale Platform API
+    binaryMediaTypes:
+      - 'multipart/form-data'
+      - 'application/octet-stream'
+
+functions:
+  api:
+    handler: lambda.handler
+    name: ${self:service}-${self:provider.stage}-api
+    description: Faded Skies API Lambda Function
+    memorySize: 512
+    timeout: 30
+    reservedConcurrency: 10
+    
+    events:
+      - http:
+          path: /{proxy+}
+          method: ANY
+          cors:
+            origin: ${env:CORS_ORIGINS}
+            headers:
+              - Content-Type
+              - X-Amz-Date
+              - Authorization
+              - X-Api-Key
+              - X-Amz-Security-Token
+              - X-Amz-User-Agent
+            allowCredentials: true
+      - http:
+          path: /
+          method: ANY
+          cors:
+            origin: ${env:CORS_ORIGINS}
+            headers:
+              - Content-Type
+              - X-Amz-Date
+              - Authorization
+              - X-Api-Key
+              - X-Amz-Security-Token
+              - X-Amz-User-Agent
+            allowCredentials: true
+
+# Custom domain configuration
+custom:
+  customDomain:
+    domainName: api.fadedskies.com
+    stage: ${self:provider.stage}
+    certificateName: '*.fadedskies.com'
+    createRoute53Record: true
+    endpointType: 'regional'
+    securityPolicy: tls_1_2
+    apiType: rest
+    autoDomain: false
+
+  # Serverless offline for local development
+  serverless-offline:
+    httpPort: 3001
+    lambdaPort: 3002
+    host: 0.0.0.0
+
+  # Bundle optimization
+  webpack:
+    webpackConfig: 'webpack.config.js'
+    includeModules: true
+    packager: 'npm'
+
+# Plugins
+plugins:
+  - serverless-domain-manager
+  - serverless-offline
+  - serverless-webpack
+  - serverless-prune-plugin
+  - serverless-aws-documentation
+
+# Resources (CloudFormation)
+resources:
+  Resources:
+    # RDS Instance
+    FadedSkiesDatabase:
+      Type: AWS::RDS::DBInstance
+      Properties:
+        DBInstanceIdentifier: faded-skies-${self:provider.stage}
+        DBInstanceClass: db.t3.micro
+        Engine: postgres
+        EngineVersion: '15.4'
+        MasterUsername: fadedskies
+        MasterUserPassword: ${env:DB_PASSWORD}
+        AllocatedStorage: 20
+        StorageType: gp2
+        StorageEncrypted: true
+        VPCSecurityGroups:
+          - ${env:SECURITY_GROUP_ID}
+        DBSubnetGroupName: ${env:DB_SUBNET_GROUP}
+        BackupRetentionPeriod: 7
+        MultiAZ: false
+        PubliclyAccessible: false
+        DeletionProtection: true
+
+    # CloudWatch Log Group
+    ApiLogGroup:
+      Type: AWS::Logs::LogGroup
+      Properties:
+        LogGroupName: /aws/lambda/${self:service}-${self:provider.stage}-api
+        RetentionInDays: 14
+
+    # S3 Bucket for uploads
+    UploadsBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: faded-skies-uploads-${self:provider.stage}
+        CorsConfiguration:
+          CorsRules:
+            - AllowedHeaders: ['*']
+              AllowedMethods: [GET, PUT, POST, DELETE]
+              AllowedOrigins: [${env:CORS_ORIGINS}]
+              MaxAge: 3000
+
+  Outputs:
+    ApiGatewayRestApiId:
+      Value:
+        Ref: ApiGatewayRestApi
+      Export:
+        Name: ${self:service}-${self:provider.stage}-restApiId
+
+    DatabaseEndpoint:
+      Value:
+        Fn::GetAtt: [FadedSkiesDatabase, Endpoint.Address]
+      Export:
+        Name: ${self:service}-${self:provider.stage}-db-endpoint
+
+# Package configuration
+package:
+  patterns:
+    - '!.git/**'
+    - '!.gitignore'
+    - '!README.md'
+    - '!.env*'
+    - '!logs/**'
+    - '!data/**'
+    - '!backups/**'
+    - '!tests/**'
+    - '!.eslintrc.js'
+    - '!jest.config.js'
+    - '!nodemon.json'
+
+# ========================================
+# DEPLOYMENT COMMANDS:
+# 
+# Install Serverless CLI:
+# npm install -g serverless
+# 
+# Deploy to AWS:
+# serverless deploy --stage production
+# 
+# Deploy single function:
+# serverless deploy function --function api --stage production
+# 
+# View logs:
+# serverless logs --function api --tail --stage production
+# 
+# Remove deployment:
+# serverless remove --stage production
+# 
+# Local development:
+# serverless offline start
+# 
+# Set up custom domain:
+# serverless create_domain --stage production
+# ========================================
